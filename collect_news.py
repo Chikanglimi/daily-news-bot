@@ -33,9 +33,11 @@
 """
 
 import argparse
+import concurrent.futures
 import configparser
 import hashlib
 import html as html_mod
+from html.parser import HTMLParser
 import json
 import logging
 import re
@@ -525,6 +527,127 @@ def _esc(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# ---------------------------------------------------------------------------
+# 整篇正文抓取（纯标准库，失败自动退回 RSS 摘要）
+# ---------------------------------------------------------------------------
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+
+def _decode_body(data: bytes, content_type: str = "") -> str:
+    """按 Content-Type / meta 猜测字符集解码网页字节。"""
+    enc = None
+    m = re.search(r"charset=[\"']?([\w-]+)", content_type, re.I)
+    if m:
+        enc = m.group(1)
+    if not enc:
+        m = re.search(rb"charset=[\"']?([\w-]+)", data[:4096], re.I)
+        if m:
+            enc = m.group(1).decode("ascii", "ignore")
+    enc = (enc or "utf-8").lower().replace("gb2312", "gbk").replace("gb_2312", "gbk")
+    for e in (enc, "utf-8", "gb18030", "latin-1"):
+        try:
+            return data.decode(e)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", "ignore")
+
+
+class _ArticleParser(HTMLParser):
+    """抽正文：跳过脚本/导航/页脚，收集段落文本。"""
+    SKIP = {"script", "style", "noscript", "nav", "header", "footer", "aside",
+            "form", "iframe", "svg", "template", "button", "select", "textarea"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._skip = 0
+        self._buf = []
+        self._paras = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self._skip += 1
+        elif tag in ("p", "br", "div", "article", "section", "li", "blockquote",
+                     "h1", "h2", "h3", "h4", "h5", "h6", "tr"):
+            self._flush()
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP:
+            self._skip = max(0, self._skip - 1)
+        elif tag in ("p", "div", "article", "section", "li", "blockquote",
+                     "h1", "h2", "h3", "h4", "h5", "h6", "tr"):
+            self._flush()
+
+    def handle_data(self, data):
+        if self._skip == 0:
+            self._buf.append(data)
+
+    def _flush(self):
+        text = "".join(self._buf)
+        self._buf = []
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) >= 2:
+            self._paras.append(text)
+
+    def paras(self):
+        self._flush()
+        return self._paras
+
+
+def _extract_article_text(html_text: str, max_chars: int = 2500) -> str:
+    """从网页 HTML 里抽取正文：找最长的一段连续长段落（正文主体）。"""
+    parser = _ArticleParser()
+    try:
+        parser.feed(html_text)
+    except Exception:
+        pass
+    paras = parser.paras()
+    if not paras:
+        return ""
+    best, best_len, run, run_len = [], 0, [], 0
+    for p in paras:
+        if len(p) >= 12:  # 长段落视为正文，短串多为导航/菜单
+            run.append(p)
+            run_len += len(p)
+            if run_len > best_len:
+                best, best_len = run[:], run_len
+        else:
+            run, run_len = [], 0
+    if not best:
+        best = paras
+    # 去掉开头残留的按钮/导航短文本（如“Send email / Copy link”）
+    while len(best) > 1 and len(best[0]) < 40:
+        best = best[1:]
+    out, total = [], 0
+    for p in best:
+        if total >= max_chars:
+            break
+        out.append(p)
+        total += len(p) + 1
+    text = "\n".join(out).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "……"
+    return text
+
+
+def fetch_full_text(url: str, timeout: int = 8, max_chars: int = 2500) -> str:
+    """抓取单篇文章正文；任何异常都返回空串（由调用方退回摘要）。"""
+    if not url:
+        return ""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _UA, "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read(2_000_000)
+            ct = resp.headers.get("Content-Type", "")
+    except Exception:
+        return ""
+    if not data:
+        return ""
+    return _extract_article_text(_decode_body(data, ct), max_chars)
+
+
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -571,7 +694,9 @@ def build_html(verified: dict, day, cfg: dict, stats: dict) -> str:
             host = (urllib.parse.urlparse(it["link"]).hostname or "").lower().removeprefix("www.")
             fname = _friendly_source(host)
             date = _esc(it.get("date_local", ""))
-            summary = (it["summary"] or "").strip() or "（该来源未提供摘要，点击标题或“阅读原文”查看全文。）"
+            summary = ((it.get("full_text") or "").strip()
+                       or (it["summary"] or "").strip()
+                       or "（该来源未提供摘要，点击标题或“阅读原文”查看全文。）")
             parts.append(
                 f'<div class="item">'
                 f'<a class="title" href="{link}">{_esc(it["title"])}</a>'
@@ -682,6 +807,24 @@ def main():
 
     stats = {"raw": len(raw), "total_kept": len(p3), **{f"p1_{k}": v for k, v in s1.items()},
              **{f"p2_{k}": v for k, v in s2.items()}, **{f"p3_{k}": v for k, v in s3.items()}}
+
+    # --- 整篇正文抓取（并发，失败自动退回摘要）---
+    to_fetch = [it for lst in verified.values() for it in lst if it.get("link")]
+    if to_fetch:
+        logger.info(f"开始抓取 {len(to_fetch)} 篇正文（并发 8，失败退回摘要）...")
+        got = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            futs = {ex.submit(fetch_full_text, it["link"]): it for it in to_fetch}
+            for fut in concurrent.futures.as_completed(futs):
+                it = futs[fut]
+                try:
+                    txt = fut.result()
+                except Exception:
+                    txt = ""
+                if txt and len(txt) > len(it.get("summary", "")):
+                    it["full_text"] = txt
+                    got += 1
+        logger.info(f"正文抓取完成：成功 {got}/{len(to_fetch)} 篇（其余退回摘要）")
 
     # --- 日报 ---
     reports_dir = BASE_DIR / "reports"
