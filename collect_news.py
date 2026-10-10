@@ -48,6 +48,7 @@ import urllib.error
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone as dt_timezone
 from email.header import Header
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -248,7 +249,7 @@ def parse_feed(xml_bytes: bytes, limit: int) -> list[dict]:
             summary = e.findtext(f"{ns_atom}summary") or e.findtext(f"{ns_atom}content") or ""
             pub = e.findtext(f"{ns_atom}updated") or e.findtext(f"{ns_atom}published") or ""
             items.append({"title": strip_html(title), "link": (link or "").strip(),
-                          "summary": strip_html(summary)[:400], "date_raw": pub})
+                          "summary": strip_html(summary)[:600], "date_raw": pub})
     else:  # RSS
         for it in root.iter("item"):
             if len(items) >= limit:
@@ -261,7 +262,7 @@ def parse_feed(xml_bytes: bytes, limit: int) -> list[dict]:
             desc = it.findtext("description") or it.findtext("{http://purl.org/rss/1.0/modules/content/}encoded") or ""
             pub = it.findtext("pubDate") or it.findtext("{http://purl.org/dc/elements/1.1/}date") or ""
             items.append({"title": strip_html(title), "link": (link or "").strip(),
-                          "summary": strip_html(desc)[:400], "date_raw": pub})
+                          "summary": strip_html(desc)[:600], "date_raw": pub})
     return items
 
 
@@ -484,6 +485,105 @@ def build_report(verified: dict, day, cfg: dict, stats: dict) -> tuple[str, str]
 
 
 # ---------------------------------------------------------------------------
+# 网页日报（一目了然的文字页面，每篇附来源网站与原文链接）
+# ---------------------------------------------------------------------------
+SOURCE_NAMES = {
+    "xinhuanet.com": "新华社",
+    "news.cn": "新华社",
+    "sputniknews.cn": "俄罗斯卫星通讯社",
+    "sina.com.cn": "新浪",
+    "ithome.com": "IT之家",
+    "sspai.com": "少数派",
+    "ifanr.com": "爱范儿",
+    "qbitai.com": "量子位",
+    "cnbc.com": "CNBC",
+    "technologyreview.com": "MIT科技评论",
+    "theverge.com": "The Verge",
+    "techcrunch.com": "TechCrunch",
+    "techradar.com": "TechRadar",
+    "tech.eu": "Tech.eu",
+    "zdnet.com": "ZDNet",
+    "sifted.eu": "Sifted",
+    "itnews.com.au": "iTnews",
+    "thepaper.cn": "澎湃新闻",
+    "caixin.com": "财新",
+    "jiemian.com": "界面",
+    "zaobao.com": "联合早报",
+    "ftchinese.com": "FT中文网",
+}
+
+
+def _friendly_source(host: str) -> str:
+    host = (host or "").lower().removeprefix("www.")
+    for k, v in SOURCE_NAMES.items():
+        if host == k or host.endswith("." + k):
+            return v
+    return host or "来源"
+
+
+def _esc(text: str) -> str:
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>每日晨报</title>
+<style>
+  body{{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:760px;margin:0 auto;padding:16px;color:#1a1a1a;line-height:1.65;background:#f5f6f8}}
+  .head{{background:#0a84ff;color:#fff;border-radius:12px;padding:18px 20px;margin-bottom:8px}}
+  .head h1{{margin:0;font-size:21px}}
+  .head .meta{{margin-top:6px;font-size:13px;opacity:.92}}
+  .cat{{margin-top:22px}}
+  .cat h2{{font-size:16px;margin:0 0 6px;border-left:4px solid #0a84ff;padding-left:9px}}
+  .item{{background:#fff;border-radius:10px;padding:13px 15px;margin:9px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
+  .item .title{{font-size:15px;font-weight:600;color:#111;text-decoration:none;display:block}}
+  .item .title:hover{{color:#0a84ff}}
+  .item .src{{font-size:12px;color:#8a8f98;margin:4px 0 6px}}
+  .item .src a{{color:#0a84ff;text-decoration:none}}
+  .item p{{font-size:14px;color:#333;margin:0;white-space:pre-wrap}}
+  .empty{{color:#9aa0a8;font-size:13px}}
+  .foot{{margin-top:26px;text-align:center;font-size:12px;color:#9aa0a8}}
+</style>
+</head>
+<body>
+{body}
+<div class="foot">本页由每日晨报机器人自动生成 · 覆盖亚欧美澳</div>
+</body>
+</html>"""
+
+
+def build_html(verified: dict, day, cfg: dict, stats: dict) -> str:
+    """生成可直接阅读的文字网页：每篇附来源网站名 + 原文链接。"""
+    head = (f'<div class="head"><h1>📰 每日晨报 · {day:%Y年%m月%d日}</h1>'
+            f'<div class="meta">原始抓取 {stats["raw"]} 条 → 三遍核对通过 {stats["total_kept"]} 条'
+            f' · 覆盖 AI / 金融 / 地缘政治 / 科技</div></div>')
+    parts = [head]
+    for cat_id, cat in cfg["categories"].items():
+        items = sorted(verified.get(cat_id, []), key=lambda x: x.get("date_local", ""), reverse=True)
+        parts.append(f'<div class="cat"><h2>{_esc(cat["title"])}（{len(items)} 条）</h2>')
+        if not items:
+            parts.append('<p class="empty">今日该栏目经核对后暂无足够可信条目。</p>')
+        for it in items:
+            link = _esc(it["link"])
+            host = (urllib.parse.urlparse(it["link"]).hostname or "").lower().removeprefix("www.")
+            fname = _friendly_source(host)
+            date = _esc(it.get("date_local", ""))
+            summary = (it["summary"] or "").strip() or "（该来源未提供摘要，点击标题或“阅读原文”查看全文。）"
+            parts.append(
+                f'<div class="item">'
+                f'<a class="title" href="{link}">{_esc(it["title"])}</a>'
+                f'<div class="src">来源：{_esc(fname)}（{_esc(host)}） · {date} · '
+                f'<a href="{link}">阅读原文 →</a></div>'
+                f'<p>{_esc(summary)}</p></div>'
+            )
+        parts.append("</div>")
+    return _HTML_TEMPLATE.format(body="\n".join(parts))
+
+
+# ---------------------------------------------------------------------------
 # 推送通道
 # ---------------------------------------------------------------------------
 def http_post(url: str, data: dict | bytes, headers: dict | None = None) -> bytes:
@@ -495,7 +595,7 @@ def http_post(url: str, data: dict | bytes, headers: dict | None = None) -> byte
         return resp.read()
 
 
-def push_brief(brief: str, cfg: dict, logger):
+def push_brief(brief: str, cfg: dict, logger, html: str | None = None):
     p = cfg["push"]
     ch = p.get("channel", "none")
     if ch == "none":
@@ -522,10 +622,14 @@ def push_brief(brief: str, cfg: dict, logger):
                                 "text": brief[i:i + 3800], "disable_web_page_preview": True})
         elif ch == "email":  # 邮件
             e = p["email"]
-            msg = MIMEText(brief, "plain", "utf-8")
-            msg["Subject"] = Header("每日晨报（AI/金融/地缘政治）", "utf-8")
+            # 同时带上纯文本与 HTML 网页版：手机/电脑邮箱都能直接渲染成一目了然的页面
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = Header("每日晨报（AI/金融/地缘政治/科技）", "utf-8")
             msg["From"] = e["username"]
             msg["To"] = e["to_addr"]
+            msg.attach(MIMEText(brief, "plain", "utf-8"))
+            if html:
+                msg.attach(MIMEText(html, "html", "utf-8"))
             with smtplib.SMTP_SSL(e["smtp_host"], e["smtp_port"], timeout=30) as s:
                 s.login(e["username"], e["password"])
                 s.sendmail(e["username"], [e["to_addr"]], msg.as_string())
@@ -587,11 +691,17 @@ def main():
     report_path.write_text(full, encoding="utf-8")
     logger.info(f"完整日报已保存: {report_path}")
 
+    # 网页版：文字直接显示在页面中，每篇附来源网站与原文链接
+    html_page = build_html(verified, day, cfg, stats)
+    html_path = reports_dir / f"daily_{day:%Y-%m-%d}.html"
+    html_path.write_text(html_page, encoding="utf-8")
+    logger.info(f"网页版日报已保存: {html_path}")
+
     # --- 推送 ---
     if args.dry_run:
         logger.info("[推送] dry-run 模式，跳过推送")
     else:
-        push_brief(brief, cfg, logger)
+        push_brief(brief, cfg, logger, html=html_page)
     logger.info("=== 运行结束 ===")
 
 
