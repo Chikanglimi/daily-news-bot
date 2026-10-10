@@ -1,0 +1,7 @@
+logs/
+reports/
+*.log
+__pycache__/
+*.pyc
+tmp_zai_search.json
+toast.xml
