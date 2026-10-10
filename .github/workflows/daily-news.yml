@@ -1,0 +1,50 @@
+# 每日晨报云端定时：每天北京时间 6:30（UTC 22:30）在 GitHub 服务器上运行
+# 与电脑开关机无关，保证按时推送；也可在 Actions 页面手动 Run workflow 测试。
+name: Daily News Bot
+
+on:
+  schedule:
+    - cron: "30 22 * * *"   # UTC 22:30 = 北京时间 6:30
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 从 GitHub Secrets 注入邮件配置（不把授权码明文提交进仓库）
+      - name: Inject email config
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          TO_ADDR: ${{ secrets.TO_ADDR }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path("config.json")
+          cfg = json.loads(p.read_text(encoding="utf-8"))
+          cfg["push"]["channel"] = "email"
+          cfg["push"]["email"]["username"] = os.environ["SMTP_USER"]
+          cfg["push"]["email"]["password"] = os.environ["SMTP_PASS"]
+          cfg["push"]["email"]["to_addr"] = os.environ.get("TO_ADDR") or os.environ["SMTP_USER"]
+          p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
+
+      - name: Run news bot
+        run: python collect_news.py
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report
+          path: reports/
+          retention-days: 30
