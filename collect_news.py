@@ -362,6 +362,11 @@ def _similar(a: str, b: str) -> float:
     return inter / min(len(ta), len(tb))
 
 
+def _host_is_authoritative(host: str, auth: tuple) -> bool:
+    """仅精确域名或其子域才算权威（避免 sputniknews.cn 误配 news.cn）。"""
+    return any(host == a or host.endswith("." + a) for a in auth)
+
+
 def pass1_crosscheck(items: list[dict], cfg: dict, logger) -> tuple[list[dict], dict]:
     """第一遍：多来源交叉验证。"""
     min_sources = cfg.get("min_sources_per_event", 2)
@@ -389,7 +394,7 @@ def pass1_crosscheck(items: list[dict], cfg: dict, logger) -> tuple[list[dict], 
     kept, dropped = [], 0
     for cl in clusters:
         hosts = {(urllib.parse.urlparse(it["link"]).hostname or "").lower().removeprefix("www.") for it in cl}
-        if len(hosts) >= min_sources or (len(cl) == 1 and any(h.endswith(auth) for h in hosts)):
+        if len(hosts) >= min_sources or (len(cl) == 1 and any(_host_is_authoritative(h, auth) for h in hosts)):
             rep = max(cl, key=lambda x: len(x["title"]) + len(x["summary"]))  # 取信息量最大者为代表
             rep["source_count"] = len(hosts)
             rep["sources"] = sorted(h for h in hosts if h)[:4]
@@ -477,10 +482,14 @@ def build_report(verified: dict, day, cfg: dict, stats: dict) -> tuple[str, str]
             continue
         for i, it in enumerate(items, 1):
             src = "/".join(it.get("sources", [])[:2]) or "来源"
+            zh_title = (it.get("zh_title") or "").strip()
+            zh_summary = (it.get("zh_summary") or "").strip()
             line_full = (f"{i}. **{it['title']}**\n"
-                         f"   - 来源: {src}（{it.get('source_count', 1)} 个独立来源）· {it.get('date_local', '')}\n"
+                         + (f"   - 译文: {zh_title}\n" if zh_title else "")
+                         + f"   - 来源: {src}（{it.get('source_count', 1)} 个独立来源）· {it.get('date_local', '')}\n"
                          f"   - {it['summary'][:180]}\n"
-                         f"   - 链接: {it['link']}\n")
+                         + (f"   - 译文: {zh_summary[:240]}\n" if zh_summary else "")
+                         + f"   - 链接: {it['link']}\n")
             parts_full.append(line_full)
             brief.append(f"{i}. {it['title'][:60]}（{src}）\n   {it['link']}")
     return "\n".join(parts_full), "\n".join(brief)
@@ -499,6 +508,7 @@ SOURCE_NAMES = {
     "ifanr.com": "爱范儿",
     "qbitai.com": "量子位",
     "cnbc.com": "CNBC",
+    "wallstreetcn.com": "华尔街见闻",
     "technologyreview.com": "MIT科技评论",
     "theverge.com": "The Verge",
     "techcrunch.com": "TechCrunch",
@@ -648,6 +658,51 @@ def fetch_full_text(url: str, timeout: int = 8, max_chars: int = 2500) -> str:
     return _extract_article_text(_decode_body(data, ct), max_chars)
 
 
+# ---------------------------------------------------------------------------
+# 英文→简体中文预翻译（优先谷歌，失败回退 MyMemory，再失败返回空串）
+# ---------------------------------------------------------------------------
+def _has_cjk(text: str) -> bool:
+    return bool(re.search(r"[一-鿿]", text or ""))
+
+
+def _translate_google(text: str, timeout: int = 8) -> str:
+    url = ("https://translate.googleapis.com/translate_a/single"
+           "?client=gtx&sl=en&tl=zh-CN&dt=t&q=" + urllib.parse.quote(text))
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return "".join(seg[0] for seg in (data[0] or []) if seg and seg[0]).strip()
+
+
+def _translate_mymemory(text: str, timeout: int = 8) -> str:
+    url = ("https://api.mymemory.translated.net/get?langpair=en%7Czh-CN&q="
+           + urllib.parse.quote(text))
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    out = ((data.get("responseData") or {}).get("translatedText") or "").strip()
+    bad = ("QUERY LENGTH", "MAX ALLOWED", "MYMEMORY WARNING", "INVALID",
+           "PLEASE SELECT", "NO QUERY")
+    if not out or any(b in out.upper() for b in bad):
+        return ""
+    return out
+
+
+def translate_zh(text: str) -> str:
+    """英文文本翻成简体中文；已含中文/为空/接口全失败时返回空串。"""
+    text = (text or "").strip()
+    if not text or _has_cjk(text):
+        return ""
+    for fn in (_translate_google, _translate_mymemory):
+        try:
+            out = fn(text)
+            if out:
+                return out
+        except Exception:
+            continue
+    return ""
+
+
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -655,18 +710,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>每日晨报</title>
 <style>
-  body{{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:760px;margin:0 auto;padding:16px;color:#1a1a1a;line-height:1.65;background:#f5f6f8}}
-  .head{{background:#0a84ff;color:#fff;border-radius:12px;padding:18px 20px;margin-bottom:8px}}
+  body{{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:760px;margin:0 auto;padding:16px;color:#1a1a1a;line-height:1.65;background:#fffff0}}
+  .head{{background:#7c3aed;color:#fff;border-radius:12px;padding:18px 20px;margin-bottom:8px}}
   .head h1{{margin:0;font-size:21px}}
   .head .meta{{margin-top:6px;font-size:13px;opacity:.92}}
   .cat{{margin-top:22px}}
-  .cat h2{{font-size:16px;margin:0 0 6px;border-left:4px solid #0a84ff;padding-left:9px}}
-  .item{{background:#fff;border-radius:10px;padding:13px 15px;margin:9px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
-  .item .title{{font-size:15px;font-weight:600;color:#111;text-decoration:none;display:block}}
-  .item .title:hover{{color:#0a84ff}}
+  .cat h2{{font-size:16px;margin:0 0 6px;border-left:4px solid #7c3aed;padding-left:9px}}
+  .item{{background:#fff;border:1px solid #efe9dc;border-radius:10px;padding:13px 15px;margin:9px 0}}
+  .item .num{{display:inline-block;min-width:22px;font-weight:700;color:#a855f7}}
+  .item .title{{font-size:15px;font-weight:700;color:#a855f7;text-decoration:none}}
+  .item .title:hover{{color:#7c3aed}}
+  .item .zh-title{{font-size:14px;color:#6b7280;font-weight:600;margin:2px 0 0}}
   .item .src{{font-size:12px;color:#8a8f98;margin:4px 0 6px}}
-  .item .src a{{color:#0a84ff;text-decoration:none}}
+  .item .src a{{color:#7c3aed;text-decoration:none}}
   .item p{{font-size:14px;color:#333;margin:0;white-space:pre-wrap}}
+  .item .zh{{margin-top:4px;color:#555}}
   .empty{{color:#9aa0a8;font-size:13px}}
   .foot{{margin-top:26px;text-align:center;font-size:12px;color:#9aa0a8}}
 </style>
@@ -679,7 +737,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 def build_html(verified: dict, day, cfg: dict, stats: dict) -> str:
-    """生成可直接阅读的文字网页：每篇附来源网站名 + 原文链接。"""
+    """生成可直接阅读的文字网页：每篇附来源网站名 + 原文链接，英文条目附简体中文译文。"""
     head = (f'<div class="head"><h1>📰 每日晨报 · {day:%Y年%m月%d日}</h1>'
             f'<div class="meta">原始抓取 {stats["raw"]} 条 → 三遍核对通过 {stats["total_kept"]} 条'
             f' · 覆盖 AI / 金融 / 地缘政治 / 科技</div></div>')
@@ -689,7 +747,7 @@ def build_html(verified: dict, day, cfg: dict, stats: dict) -> str:
         parts.append(f'<div class="cat"><h2>{_esc(cat["title"])}（{len(items)} 条）</h2>')
         if not items:
             parts.append('<p class="empty">今日该栏目经核对后暂无足够可信条目。</p>')
-        for it in items:
+        for i, it in enumerate(items, 1):
             link = _esc(it["link"])
             host = (urllib.parse.urlparse(it["link"]).hostname or "").lower().removeprefix("www.")
             fname = _friendly_source(host)
@@ -697,12 +755,17 @@ def build_html(verified: dict, day, cfg: dict, stats: dict) -> str:
             summary = ((it.get("full_text") or "").strip()
                        or (it["summary"] or "").strip()
                        or "（该来源未提供摘要，点击标题或“阅读原文”查看全文。）")
+            zh_title = (it.get("zh_title") or "").strip()
+            zh_summary = (it.get("zh_summary") or "").strip()
             parts.append(
-                f'<div class="item">'
+                f'<div class="item"><span class="num">{i}</span>'
                 f'<a class="title" href="{link}">{_esc(it["title"])}</a>'
-                f'<div class="src">来源：{_esc(fname)}（{_esc(host)}） · {date} · '
+                + (f'<div class="zh-title">🌐 {_esc(zh_title)}</div>' if zh_title else "")
+                + f'<div class="src">来源：{_esc(fname)}（{_esc(host)}） · {date} · '
                 f'<a href="{link}">阅读原文 →</a></div>'
-                f'<p>{_esc(summary)}</p></div>'
+                f'<p>{_esc(summary)}</p>'
+                + (f'<p class="zh">🌐 {_esc(zh_summary)}</p>' if zh_summary else "")
+                + "</div>"
             )
         parts.append("</div>")
     return _HTML_TEMPLATE.format(body="\n".join(parts))
@@ -825,6 +888,21 @@ def main():
                     it["full_text"] = txt
                     got += 1
         logger.info(f"正文抓取完成：成功 {got}/{len(to_fetch)} 篇（其余退回摘要）")
+
+    # --- 英文条目预翻译为简体中文（原文下方附译文；接口失败自动跳过）---
+    to_translate = [it for lst in verified.values() for it in lst if not _has_cjk(it["title"])]
+    if to_translate:
+        logger.info(f"开始翻译 {len(to_translate)} 个英文条目为简体中文 ...")
+
+        def _do_translate(it):
+            it["zh_title"] = translate_zh(it["title"])
+            disp = ((it.get("full_text") or "").strip() or (it["summary"] or "").strip())
+            it["zh_summary"] = translate_zh(disp[:480]) if disp else ""
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+            list(ex.map(_do_translate, to_translate))
+        got_zh = sum(1 for it in to_translate if it.get("zh_title"))
+        logger.info(f"翻译完成：{got_zh}/{len(to_translate)} 个条目获得中文译文")
 
     # --- 日报 ---
     reports_dir = BASE_DIR / "reports"
