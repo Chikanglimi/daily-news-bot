@@ -184,7 +184,15 @@ DEFAULT_CONFIG = {
 
 
 def load_config(path: Path) -> dict:
-    cfg = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        # 文件缺失 / 编码错误 / JSON 损坏：回退内置默认配置，避免定时任务崩溃
+        print(f"[警告] 读取配置失败（{exc}），改用内置默认配置", file=sys.stderr)
+        return json.loads(json.dumps(DEFAULT_CONFIG))
+    if not isinstance(cfg, dict):
+        print("[警告] 配置文件内容不是对象，改用内置默认配置", file=sys.stderr)
+        return json.loads(json.dumps(DEFAULT_CONFIG))
     # 浅合并默认值，保证旧配置文件兼容
     for k, v in DEFAULT_CONFIG.items():
         cfg.setdefault(k, v)
@@ -410,7 +418,7 @@ def pass2_keyword(items: list[dict], cfg: dict, logger) -> tuple[list[dict], dic
     """第二遍：栏目关键词精确匹配（标题或摘要须真实命中）。"""
     kept, dropped = [], 0
     for it in items:
-        kws = cfg["categories"][it["category"]]["keywords"]
+        kws = (cfg["categories"].get(it["category"]) or {}).get("keywords", [])
         text = f"{it['title']} {it['summary']}".lower()
         if any(k.lower() in text for k in kws):
             kept.append(it)
@@ -534,7 +542,8 @@ def _friendly_source(host: str) -> str:
 
 
 def _esc(text: str) -> str:
-    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return ((text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#39;"))
 
 
 # ---------------------------------------------------------------------------
