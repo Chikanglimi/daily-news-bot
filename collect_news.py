@@ -478,6 +478,9 @@ def build_report(verified: dict, day, cfg: dict, stats: dict) -> tuple[str, str]
 
     # 简报（推送文本）头部
     brief = [f"📰 每日晨报 {day:%m-%d}（已三遍核对：{stats['raw']}→{stats['total_kept']}条）"]
+    web = (cfg.get("web_base_url") or "").rstrip("/")
+    if web:
+        brief.append(f"🌐 完整效果（浏览器打开）: {web}/latest.html")
 
     for cat_id, cat in cfg["categories"].items():
         items = verified.get(cat_id, [])
@@ -825,6 +828,10 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     background:linear-gradient(90deg,#6b4a0a,var(--gold));-webkit-background-clip:text;
     background-clip:text;color:transparent}
   .head .meta{margin-top:10px;font-size:13px;color:var(--muted)}
+  .weblink{display:block;margin:12px 0;padding:12px 16px;text-align:center;
+    border:1px solid var(--gold);border-radius:12px;font-weight:700;text-decoration:none;
+    color:#6b4a0a;background:linear-gradient(135deg,rgba(192,138,29,.14),rgba(123,86,214,.10))}
+  .weblink:hover{background:linear-gradient(135deg,rgba(192,138,29,.22),rgba(123,86,214,.16))}
   .cat{margin-top:30px}
   .cat h2{font-size:17px;margin:0 0 10px;padding-left:12px;border-left:3px solid var(--gold);
     letter-spacing:1px;font-weight:700}
@@ -893,6 +900,10 @@ def build_html(verified: dict, day, cfg: dict, stats: dict) -> str:
             f'<div class="meta">原始抓取 {stats["raw"]} 条 → 三遍核对通过 {stats["total_kept"]} 条'
             f' · 覆盖 AI / 金融 / 地缘政治 / 科技</div></div>')
     parts = [head]
+    web = (cfg.get("web_base_url") or "").rstrip("/")
+    if web:
+        parts.append(f'<a class="weblink" href="{_esc(web)}/latest.html">'
+                     f'🌐 在浏览器中打开完整效果（滚动动画版）</a>')
     uid = 0
     for cat_id, cat in cfg["categories"].items():
         items = sorted(verified.get(cat_id, []), key=lambda x: x.get("date_local", ""), reverse=True)
