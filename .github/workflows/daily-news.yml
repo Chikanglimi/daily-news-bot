@@ -1,5 +1,6 @@
 # 每日晨报云端定时：每天北京时间 6:30（UTC 22:30）在 GitHub 服务器上运行
 # 与电脑开关机无关，保证按时推送；也可在 Actions 页面手动 Run workflow 测试。
+# 同时把日报 HTML 部署到 GitHub Pages，供邮件里的「浏览器打开完整效果」链接使用。
 name: Daily News Bot
 
 on:
@@ -9,6 +10,12 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   collect-and-push:
@@ -42,9 +49,25 @@ jobs:
       - name: Run news bot
         run: python collect_news.py
 
-      - name: Upload reports
+      - name: Upload reports artifact
         uses: actions/upload-artifact@v4
         with:
           name: daily-report
           path: reports/
           retention-days: 30
+
+      # 生成一个固定文件名的 latest.html，方便邮件里的链接长期有效
+      - name: Make latest.html
+        run: cp "$(ls reports/daily_*.html | head -1)" reports/latest.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: reports/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
