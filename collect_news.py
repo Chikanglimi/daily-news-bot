@@ -719,44 +719,106 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>每日晨报</title>
 <style>
-  body{{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:760px;margin:0 auto;padding:16px;color:#1a1a1a;line-height:1.65;background:#fffff0}}
-  .head{{background:#7c3aed;color:#fff;border-radius:12px;padding:18px 20px;margin-bottom:8px}}
-  .head h1{{margin:0;font-size:21px}}
-  .head .meta{{margin-top:6px;font-size:13px;opacity:.92}}
-  .cat{{margin-top:22px}}
-  .cat h2{{font-size:16px;margin:0 0 6px;border-left:4px solid #7c3aed;padding-left:9px}}
-  .item{{background:#fff;border:1px solid #efe9dc;border-radius:10px;padding:13px 15px;margin:9px 0}}
-  .item .num{{display:inline-block;min-width:22px;font-weight:700;color:#a855f7}}
-  .item .title{{font-size:15px;font-weight:700;color:#a855f7;text-decoration:none}}
-  .item .title:hover{{color:#7c3aed}}
-  .item .zh-title{{font-size:14px;color:#6b7280;font-weight:600;margin:2px 0 0}}
-  .item .src{{font-size:12px;color:#8a8f98;margin:4px 0 6px}}
-  .item .src a{{color:#7c3aed;text-decoration:none}}
-  .item p{{font-size:14px;color:#333;margin:0;white-space:pre-wrap}}
-  .item .zh{{margin-top:4px;color:#555}}
-  .empty{{color:#9aa0a8;font-size:13px}}
-  .foot{{margin-top:26px;text-align:center;font-size:12px;color:#9aa0a8}}
+  :root{
+    --bg:#0b0b12; --card:#16161f; --line:#262636; --text:#e9e6e0;
+    --muted:#9a99a6; --gold:#f5c518; --violet:#8b5cf6;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    max-width:780px;margin:0 auto;padding:20px 16px 64px;color:var(--text);line-height:1.7;
+    background:var(--bg);
+    background-image:radial-gradient(1200px 620px at 50% -12%, #1d1d36 0%, transparent 60%),
+                     radial-gradient(900px 520px at 100% 112%, #1a1430 0%, transparent 55%)}
+  .progress{display:none}
+  .js .progress{display:block;position:fixed;top:0;left:0;height:3px;width:0;
+    background:linear-gradient(90deg,var(--violet),var(--gold));z-index:99;
+    box-shadow:0 0 12px rgba(245,197,24,.55)}
+  .head{position:relative;padding:30px 22px;margin-bottom:12px;border:1px solid var(--line);
+    border-radius:16px;overflow:hidden;
+    background:linear-gradient(135deg,rgba(139,92,246,.16),rgba(245,197,24,.08))}
+  .head::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.015) 0 2px,transparent 2px 4px)}
+  .head h1{margin:0;font-size:26px;font-weight:800;letter-spacing:1px;
+    background:linear-gradient(90deg,#fff,var(--gold));-webkit-background-clip:text;
+    background-clip:text;color:transparent}
+  .head .meta{margin-top:10px;font-size:13px;color:var(--muted)}
+  .cat{margin-top:30px}
+  .cat h2{font-size:17px;margin:0 0 10px;padding-left:12px;border-left:3px solid var(--gold);
+    letter-spacing:1px;font-weight:700}
+  .item{position:relative;background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:15px 16px;margin:12px 0;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+  .item:hover{border-color:rgba(245,197,24,.45);transform:translateY(-2px);transition:transform .25s,border-color .25s}
+  .item .num{display:inline-block;min-width:24px;font-weight:800;color:var(--gold)}
+  .item .title{font-size:15.5px;font-weight:700;color:#fff;text-decoration:none}
+  .item .title:hover{color:var(--gold)}
+  .item .src{font-size:12px;color:var(--muted);margin:6px 0 8px}
+  .item .src a{color:var(--violet);text-decoration:none}
+  .item p{font-size:14px;color:#cfccc6;margin:0;white-space:pre-wrap}
+  .zh-btn{display:inline-block;margin-top:10px;padding:6px 14px;border:1px solid var(--gold);
+    border-radius:999px;color:var(--gold);font-size:13px;cursor:pointer;user-select:none;
+    background:rgba(245,197,24,.06)}
+  .zh-btn:hover{background:rgba(245,197,24,.16)}
+  .zh-toggle{display:none}
+  .zh-btn .on{display:none}
+  .zh-toggle:checked ~ .zh-btn .off{display:none}
+  .zh-toggle:checked ~ .zh-btn .on{display:inline}
+  .zh-box{display:none;margin-top:10px;padding:12px 14px;border-left:3px solid var(--violet);
+    background:rgba(139,92,246,.08);border-radius:0 10px 10px 0}
+  .zh-toggle:checked ~ .zh-box{display:block;animation:fadein .4s ease}
+  .zh-title{font-size:14px;color:#c4b5fd;font-weight:600;margin-bottom:4px}
+  .zh{color:#b8b4c9}
+  @keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .empty{color:var(--muted);font-size:13px}
+  .foot{margin-top:34px;text-align:center;font-size:12px;color:#6a6a78}
+  .js .reveal{opacity:0;transform:translateY(24px);filter:blur(6px);
+    transition:opacity .7s ease,transform .7s ease,filter .7s ease}
+  .js .reveal.in{opacity:1;transform:none;filter:none}
 </style>
 </head>
 <body>
-{body}
+<div class="progress" id="progress"></div>
+__BODY__
 <div class="foot">本页由每日晨报机器人自动生成 · 覆盖亚欧美澳</div>
+<script>
+(function(){
+  if(!("IntersectionObserver" in window)){return;}
+  document.documentElement.classList.add("js");
+  var els=document.querySelectorAll(".reveal");
+  var io=new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){e.target.classList.add("in");io.unobserve(e.target);}
+    });
+  },{threshold:.08,rootMargin:"0px 0px -8% 0px"});
+  els.forEach(function(el){io.observe(el);});
+  var bar=document.getElementById("progress");
+  function paint(){
+    var h=document.documentElement;
+    var max=h.scrollHeight-window.innerHeight;
+    bar.style.width=(max>0?(h.scrollTop/max)*100:0)+"%";
+  }
+  window.addEventListener("scroll",paint,{passive:true});
+  paint();
+})();
+</script>
 </body>
 </html>"""
 
 
 def build_html(verified: dict, day, cfg: dict, stats: dict) -> str:
-    """生成可直接阅读的文字网页：每篇附来源网站名 + 原文链接，英文条目附简体中文译文。"""
+    """生成可直接阅读的文字网页：每篇附来源网站名 + 原文链接，英文条目附简体中文译文（默认隐藏，点按钮才显示）。"""
     head = (f'<div class="head"><h1>📰 每日晨报 · {day:%Y年%m月%d日}</h1>'
             f'<div class="meta">原始抓取 {stats["raw"]} 条 → 三遍核对通过 {stats["total_kept"]} 条'
             f' · 覆盖 AI / 金融 / 地缘政治 / 科技</div></div>')
     parts = [head]
+    uid = 0
     for cat_id, cat in cfg["categories"].items():
         items = sorted(verified.get(cat_id, []), key=lambda x: x.get("date_local", ""), reverse=True)
         parts.append(f'<div class="cat"><h2>{_esc(cat["title"])}（{len(items)} 条）</h2>')
         if not items:
             parts.append('<p class="empty">今日该栏目经核对后暂无足够可信条目。</p>')
         for i, it in enumerate(items, 1):
+            uid += 1
             link = _esc(it["link"])
             host = (urllib.parse.urlparse(it["link"]).hostname or "").lower().removeprefix("www.")
             fname = _friendly_source(host)
@@ -766,18 +828,29 @@ def build_html(verified: dict, day, cfg: dict, stats: dict) -> str:
                        or "（该来源未提供摘要，点击标题或“阅读原文”查看全文。）")
             zh_title = (it.get("zh_title") or "").strip()
             zh_summary = (it.get("zh_summary") or "").strip()
-            parts.append(
-                f'<div class="item"><span class="num">{i}</span>'
+            item = (
+                f'<div class="item reveal" style="transition-delay:{min((i - 1) * 60, 400)}ms">'
+                f'<span class="num">{i}</span>'
                 f'<a class="title" href="{link}">{_esc(it["title"])}</a>'
-                + (f'<div class="zh-title">🌐 {_esc(zh_title)}</div>' if zh_title else "")
-                + f'<div class="src">来源：{_esc(fname)}（{_esc(host)}） · {date} · '
+                f'<div class="src">来源：{_esc(fname)}（{_esc(host)}） · {date} · '
                 f'<a href="{link}">阅读原文 →</a></div>'
                 f'<p>{_esc(summary)}</p>'
-                + (f'<p class="zh">🌐 {_esc(zh_summary)}</p>' if zh_summary else "")
-                + "</div>"
             )
+            if zh_title or zh_summary:
+                zid = f"zh-{uid}"
+                item += (
+                    f'<input class="zh-toggle" type="checkbox" id="{zid}">'
+                    f'<label class="zh-btn" for="{zid}">'
+                    f'<span class="off">🌐 显示中文翻译</span><span class="on">🌐 收起翻译</span></label>'
+                    f'<div class="zh-box">'
+                    + (f'<div class="zh-title">🌐 {_esc(zh_title)}</div>' if zh_title else "")
+                    + (f'<p class="zh">🌐 {_esc(zh_summary)}</p>' if zh_summary else "")
+                    + "</div>"
+                )
+            item += "</div>"
+            parts.append(item)
         parts.append("</div>")
-    return _HTML_TEMPLATE.format(body="\n".join(parts))
+    return _HTML_TEMPLATE.replace("__BODY__", "\n".join(parts))
 
 
 # ---------------------------------------------------------------------------
