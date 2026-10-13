@@ -712,6 +712,84 @@ def translate_zh(text: str) -> str:
     return ""
 
 
+# 正文翻译长度上限（字符）：免费翻译接口额度有限，只翻标题 + 正文前段，兼顾速度与可靠性。
+# 需要更完整时调大；需要更稳时调小。
+TRANSLATE_BODY_CHARS = 1000
+
+
+def _chunk_paragraph(text: str, max_chars: int = 450) -> list[str]:
+    """把一段英文切成 <= max_chars 的片段，尽量在句末断开（绕过翻译接口单次长度上限）。"""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+    sentences = [s for s in re.split(r"(?<=[.!?。！？；;])\s+", text) if s]
+    if not sentences:
+        sentences = [text]
+    chunks, cur = [], ""
+    for s in sentences:
+        while len(s) > max_chars:  # 单个句子仍超长，硬切
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.append(s[:max_chars])
+            s = s[max_chars:]
+        if cur and len(cur) + len(s) + 1 > max_chars:
+            chunks.append(cur)
+            cur = s
+        else:
+            cur = (cur + " " + s) if cur else s
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _translate_long_chunk(text: str) -> str:
+    """翻译一个较长片段：优先整段走 Google，失败且超 MyMemory 上限时细切后逐片翻译。"""
+    try:
+        out = _translate_google(text)
+        if out:
+            return out
+    except Exception:
+        pass
+    if len(text) <= 450:
+        try:
+            out = _translate_mymemory(text)
+            if out:
+                return out
+        except Exception:
+            pass
+        return ""
+    parts = []
+    for c in _chunk_paragraph(text, 450):
+        try:
+            out = _translate_mymemory(c)
+            if out:
+                parts.append(out)
+        except Exception:
+            continue
+    return "".join(parts)
+
+
+def translate_zh_long(text: str, max_chars: int = 1500) -> str:
+    """长英文文本翻译：按段落切较大片（Google 优先），失败细切兜底，覆盖整篇正文。"""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    paras = [p for p in re.split(r"\n+", text) if p.strip()]
+    translated = []
+    for p in paras:
+        parts = []
+        for c in _chunk_paragraph(p, max_chars):
+            t = _translate_long_chunk(c)
+            if t:
+                parts.append(t)
+        if parts:
+            translated.append("".join(parts))
+    return "\n".join(translated)
+
+
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -720,57 +798,58 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <title>每日晨报</title>
 <style>
   :root{
-    --bg:#0b0b12; --card:#16161f; --line:#262636; --text:#e9e6e0;
-    --muted:#9a99a6; --gold:#f5c518; --violet:#8b5cf6;
+    --bg:#fdf8ee; --card:#fffdf6; --line:#eee2c9; --text:#3c3427;
+    --muted:#a4936f; --gold:#c08a1d; --violet:#7b56d6;
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
   body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
     max-width:780px;margin:0 auto;padding:20px 16px 64px;color:var(--text);line-height:1.7;
     background:var(--bg);
-    background-image:radial-gradient(1200px 620px at 50% -12%, #1d1d36 0%, transparent 60%),
-                     radial-gradient(900px 520px at 100% 112%, #1a1430 0%, transparent 55%)}
+    background-image:radial-gradient(1200px 620px at 50% -12%, #fff6dd 0%, transparent 60%),
+                     radial-gradient(900px 520px at 100% 112%, #f4e7c9 0%, transparent 55%),
+                     radial-gradient(700px 420px at 0% 55%, #fbf0d2 0%, transparent 52%)}
   .progress{display:none}
   .js .progress{display:block;position:fixed;top:0;left:0;height:3px;width:0;
     background:linear-gradient(90deg,var(--violet),var(--gold));z-index:99;
-    box-shadow:0 0 12px rgba(245,197,24,.55)}
+    box-shadow:0 0 12px rgba(192,138,29,.5)}
   .head{position:relative;padding:30px 22px;margin-bottom:12px;border:1px solid var(--line);
     border-radius:16px;overflow:hidden;
-    background:linear-gradient(135deg,rgba(139,92,246,.16),rgba(245,197,24,.08))}
+    background:linear-gradient(135deg,rgba(123,86,214,.12),rgba(192,138,29,.10))}
   .head::after{content:"";position:absolute;inset:0;pointer-events:none;
-    background:repeating-linear-gradient(0deg,rgba(255,255,255,.015) 0 2px,transparent 2px 4px)}
+    background:repeating-linear-gradient(0deg,rgba(90,70,30,.04) 0 2px,transparent 2px 4px)}
   .head h1{margin:0;font-size:26px;font-weight:800;letter-spacing:1px;
-    background:linear-gradient(90deg,#fff,var(--gold));-webkit-background-clip:text;
+    background:linear-gradient(90deg,#6b4a0a,var(--gold));-webkit-background-clip:text;
     background-clip:text;color:transparent}
   .head .meta{margin-top:10px;font-size:13px;color:var(--muted)}
   .cat{margin-top:30px}
   .cat h2{font-size:17px;margin:0 0 10px;padding-left:12px;border-left:3px solid var(--gold);
     letter-spacing:1px;font-weight:700}
   .item{position:relative;background:var(--card);border:1px solid var(--line);border-radius:14px;
-    padding:15px 16px;margin:12px 0;box-shadow:0 6px 24px rgba(0,0,0,.35)}
-  .item:hover{border-color:rgba(245,197,24,.45);transform:translateY(-2px);transition:transform .25s,border-color .25s}
+    padding:15px 16px;margin:12px 0;box-shadow:0 6px 24px rgba(120,95,40,.12)}
+  .item:hover{border-color:rgba(192,138,29,.5);transform:translateY(-2px);transition:transform .25s,border-color .25s}
   .item .num{display:inline-block;min-width:24px;font-weight:800;color:var(--gold)}
-  .item .title{font-size:15.5px;font-weight:700;color:#fff;text-decoration:none}
+  .item .title{font-size:15.5px;font-weight:700;color:#2a2318;text-decoration:none}
   .item .title:hover{color:var(--gold)}
   .item .src{font-size:12px;color:var(--muted);margin:6px 0 8px}
   .item .src a{color:var(--violet);text-decoration:none}
-  .item p{font-size:14px;color:#cfccc6;margin:0;white-space:pre-wrap}
+  .item p{font-size:14px;color:#5c5240;margin:0;white-space:pre-wrap}
   .zh-btn{display:inline-block;margin-top:10px;padding:6px 14px;border:1px solid var(--gold);
     border-radius:999px;color:var(--gold);font-size:13px;cursor:pointer;user-select:none;
-    background:rgba(245,197,24,.06)}
-  .zh-btn:hover{background:rgba(245,197,24,.16)}
+    background:rgba(192,138,29,.08)}
+  .zh-btn:hover{background:rgba(192,138,29,.18)}
   .zh-toggle{display:none}
   .zh-btn .on{display:none}
   .zh-toggle:checked ~ .zh-btn .off{display:none}
   .zh-toggle:checked ~ .zh-btn .on{display:inline}
   .zh-box{display:none;margin-top:10px;padding:12px 14px;border-left:3px solid var(--violet);
-    background:rgba(139,92,246,.08);border-radius:0 10px 10px 0}
+    background:rgba(123,86,214,.06);border-radius:0 10px 10px 0}
   .zh-toggle:checked ~ .zh-box{display:block;animation:fadein .4s ease}
-  .zh-title{font-size:14px;color:#c4b5fd;font-weight:600;margin-bottom:4px}
-  .zh{color:#b8b4c9}
+  .zh-title{font-size:14px;color:#6a4fc0;font-weight:600;margin-bottom:4px}
+  .zh{color:#6b6280}
   @keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
   .empty{color:var(--muted);font-size:13px}
-  .foot{margin-top:34px;text-align:center;font-size:12px;color:#6a6a78}
+  .foot{margin-top:34px;text-align:center;font-size:12px;color:#a4936f}
   .js .reveal{opacity:0;transform:translateY(24px);filter:blur(6px);
     transition:opacity .7s ease,transform .7s ease,filter .7s ease}
   .js .reveal.in{opacity:1;transform:none;filter:none}
@@ -971,7 +1050,7 @@ def main():
                     got += 1
         logger.info(f"正文抓取完成：成功 {got}/{len(to_fetch)} 篇（其余退回摘要）")
 
-    # --- 英文条目预翻译为简体中文（原文下方附译文；接口失败自动跳过）---
+    # --- 英文条目预翻译为简体中文（整篇正文分片翻译；接口失败自动跳过）---
     to_translate = [it for lst in verified.values() for it in lst if not _has_cjk(it["title"])]
     if to_translate:
         logger.info(f"开始翻译 {len(to_translate)} 个英文条目为简体中文 ...")
@@ -979,7 +1058,7 @@ def main():
         def _do_translate(it):
             it["zh_title"] = translate_zh(it["title"])
             disp = ((it.get("full_text") or "").strip() or (it["summary"] or "").strip())
-            it["zh_summary"] = translate_zh(disp[:480]) if disp else ""
+            it["zh_summary"] = translate_zh_long(disp[:TRANSLATE_BODY_CHARS]) if disp else ""
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
             list(ex.map(_do_translate, to_translate))
