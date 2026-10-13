@@ -3,6 +3,7 @@
   "push_hour": 6,
   "push_minute": 30,
   "backend": "rss",
+  "web_base_url": "https://chikanglimi.github.io/daily-news-bot",
   "max_items_per_feed": 40,
   "min_sources_per_event": 2,
   "authoritative_domains": [
