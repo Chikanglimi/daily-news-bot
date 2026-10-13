@@ -795,14 +795,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
 <title>每日晨报</title>
 <style>
   :root{
     --bg:#fdf8ee; --card:#fffdf6; --line:#eee2c9; --text:#3c3427;
     --muted:#a4936f; --gold:#c08a1d; --violet:#7b56d6;
+    color-scheme:light;
   }
   *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
+  html{scroll-behavior:smooth;background:var(--bg)}
   body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
     max-width:780px;margin:0 auto;padding:20px 16px 64px;color:var(--text);line-height:1.7;
     background:var(--bg);
